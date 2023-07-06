@@ -1,6 +1,26 @@
+"""
+Primal dual pair of programs of the form
+```
+min c'x
+s.t. b - A * x in K
+max -⟨bt, y⟩
+s.t. At * y + c = 0
+     y in K*
+```
+
+!!! note
+    The vector `bt` and matrix `At` are not necessarily `b'` and `A'`.
+    We need
+    ```
+    ⟨A * x, y⟩ = ⟨x, At * y⟩
+    ```
+    where `⟨⋅, ⋅⟩` is `MOI.Utilities.set_dot`.
+"""
 struct Data{T}
     A::SparseMatrixCSC{T,Int}
+    At::SparseMatrixCSC{T,Int}
     b::Vector{T}
+    bt::Vector{T}
     c::Vector{T}
 end
 
@@ -70,10 +90,12 @@ end
 
 function project_affine(data::Data{T}, cache, wxy, wτ, n) where {T}
     m, n = size(data.A)
+    # For sets for which `set_dot` is not `dot`,
+    # `Q` is not symmetric hence it is not a self-dual embedding
     Q = [
-        spzeros(T, n, n) data.A' data.c
+        spzeros(T, n, n) data.At data.c
         -data.A spzeros(T, m, m) data.b
-        -data.c' -data.b' zero(T)
+        -data.c' -data.bt' zero(T)
     ]
     w = [wxy; wτ]
     ũ = (I + Q) \ w

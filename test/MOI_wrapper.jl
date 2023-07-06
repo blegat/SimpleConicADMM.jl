@@ -6,7 +6,9 @@ import SimpleConicADMM
 
 function test_runtests()
     optimizer = SimpleConicADMM.Optimizer()
-    MOI.set(optimizer, MOI.RawOptimizerAttribute("max_iters"), 600)
+    # The most demanding test is `test_conic_PositiveSemidefiniteConeTriangle`
+    # which requires 1083 iterations.
+    MOI.set(optimizer, MOI.RawOptimizerAttribute("max_iters"), 2000)
     MOI.set(optimizer, MOI.Silent(), true) # comment this to enable output
     model = MOI.Bridges.full_bridge_optimizer(
         MOI.Utilities.CachingOptimizer(

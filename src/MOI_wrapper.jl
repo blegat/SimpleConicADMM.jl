@@ -11,6 +11,7 @@ const SUPPORTED_CONES = Union{
     MOI.DualExponentialCone,
     MOI.PowerCone,
     MOI.DualPowerCone,
+    MOI.PositiveSemidefiniteConeTriangle,
 }
 
 MOI.Utilities.@product_of_sets(
@@ -22,6 +23,7 @@ MOI.Utilities.@product_of_sets(
     MOI.DualExponentialCone,
     MOI.PowerCone,
     MOI.DualPowerCone,
+    MOI.PositiveSemidefiniteConeTriangle,
 )
 
 const OptimizerCache{T} = MOI.Utilities.GenericModel{
@@ -151,6 +153,46 @@ function MOI.supports_constraint(
     return true
 end
 
+function _set_dot!(output, x, y, K, cis)
+    for ci in cis
+        cone = _set(K, ci)
+        rows = MOI.Utilities.rows(K, ci)
+        output += MOI.Utilities.set_dot(x[rows], y[rows], cone)
+    end
+    return output
+end
+
+function _set_dot(x, y, K)
+    output = zero(eltype(x))
+    for (F, S) in MOI.get(K, MOI.ListOfConstraintTypesPresent())
+        cis = MOI.get(K, MOI.ListOfConstraintIndices{F,S}())
+        output = _set_dot!(output, x, y, K, cis)
+    end
+    return output
+end
+
+import Dualization
+
+function _set_dot_scaling!(output, ::Type{T}, K, cis) where {T}
+    for ci in cis
+        cone = _set(K, ci)
+        rows = MOI.Utilities.rows(K, ci)
+        for row in rows
+            i = row - first(row) + 1
+            output[row] = Dualization.set_dot(i, cone, T)
+        end
+    end
+end
+
+function _set_dot_scaling(::Type{T}, n, K) where {T}
+    output = ones(T, n)
+    for (F, S) in MOI.get(K, MOI.ListOfConstraintTypesPresent())
+        cis = MOI.get(K, MOI.ListOfConstraintIndices{F,S}())
+        _set_dot_scaling!(output, T, K, cis)
+    end
+    return output
+end
+
 function MOI.optimize!(optimizer::Optimizer{T}) where {T}
     data = optimizer.data
     sol = optimizer.sol
@@ -166,9 +208,9 @@ function MOI.optimize!(optimizer::Optimizer{T}) where {T}
         x = primal(sol, n)
         y = dual(sol, n)
         p = (data.A * x + slack(sol, n)) - data.b
-        d = data.A' * y + data.c
+        d = data.At * y + data.c
         cx = dot(data.c, x)
-        by = dot(data.b, y)
+        by = _set_dot(data.b, y, optimizer.cones)
         primal_feasibility = norm(p) / (one(T) + norm_b)
         primal_feasible = primal_feasibility ≤ options["ϵ_primal"]
         dual_feasibility = norm(d) / (one(T) + norm_c)
@@ -206,8 +248,8 @@ function MOI.optimize!(optimizer::Optimizer{T}) where {T}
             return
         end
         uy = unscaled_dual(sol, n)
-        buy = -dot(data.b, uy)
-        if norm(data.A' * uy) < (buy / norm_b) * options["ϵ_infeasible"]
+        buy = -_set_dot(data.b, uy, optimizer.cones)
+        if norm(data.At * uy) < (buy / norm_b) * options["ϵ_infeasible"]
             sol.raw_status = "Detected to be primal infeasible"
             sol.termination_status = MOI.INFEASIBLE
             sol.primal_status = MOI.INFEASIBLE_POINT
@@ -248,7 +290,9 @@ function MOI.copy_to(dest::Optimizer{T}, src::OptimizerCache{T}) where {T}
         c0[term.variable.value] += term.coefficient
     end
     dest.cones = deepcopy(src.constraints.sets)
-    dest.data = Data(A, Ab.constants, dest.max_sense ? -c0 : c0)
+    D = LinearAlgebra.Diagonal(_set_dot_scaling(T, size(A, 1), dest.cones))
+    dest.data =
+        Data(A, A' * D, Ab.constants, Ab.constants, dest.max_sense ? -c0 : c0)
     dest.sol, dest.cache = setup(dest.data)
     return MOI.Utilities.identity_index_map(src)
 end
